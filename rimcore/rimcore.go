@@ -29,8 +29,23 @@ func NewPagedResult[T any](total int64, items T) *PagedResult[T] {
 	}
 }
 
-//-----Scopes for the various scopes for getting the limits in pagination
-
+// WithPaginationScope creates a GORM scope function that implements pagination functionality.
+// It handles page numbers, limits, and sorting of database queries.
+//
+// Parameters:
+//   - pagination: A PageRequest object containing pagination parameters (page number, limit, sort field, sort direction)
+//
+// Returns:
+//   - A GORM scope function that applies pagination, limiting and sorting to the query
+//
+// Example Usage:
+//
+//	db.Scopes(WithPaginationScope(&PageRequest{
+//	    Page:      1,
+//	    Limit:     20,
+//	    Sort:      "created_at",
+//	    Direction: SortDirection_SORT_DIRECTION_DESC,
+//	})).Find(&records)
 func WithPaginationScope(pagination *commonv1.PageRequest) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		// Defaults
@@ -71,6 +86,25 @@ func WithPaginationScope(pagination *commonv1.PageRequest) func(db *gorm.DB) *go
 	}
 }
 
+// WithTenantScope creates a GORM scope function that filters database queries by tenant ID.
+// It is used to implement multi-tenancy by ensuring that queries only return records
+// belonging to the specified tenant.
+//
+// Parameters:
+//   - tenantId: The unique identifier of the tenant to filter by
+//
+// Returns:
+//   - A GORM scope function that adds a WHERE clause for the tenant_id field
+//
+// Example Usage:
+//
+//	db.Scopes(WithTenantScope("tenant-123")).Find(&records)
+func WithTenantScope(tenantId string) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("tenant_id = ?", tenantId)
+	}
+}
+
 const (
 	// ContextKeyUser is used to store the authenticated user's claims in context.
 	ContextKeyUser = "UserClaimsKey"
@@ -96,20 +130,20 @@ var ErrMissingOrInvalidToken = connect.NewError(connect.CodeUnauthenticated, err
 
 //Helpers
 
-type grpcRequestHelper struct {
+type contextHelper struct {
 	authenticator Authenticator
 }
 
-func (helper grpcRequestHelper) GetAccessToken(request connect.AnyRequest) (string, error) {
+func (helper *contextHelper) GetAccessToken(request connect.AnyRequest) (string, error) {
 	return helper.authenticator.ExtractHeaderToken(request)
 }
 
-func (helper grpcRequestHelper) GetUserClaims(ctx context.Context) *UserAuthClaims {
+func (helper *contextHelper) GetUserClaims(ctx context.Context) *UserAuthClaims {
 	userClaims := ctx.Value(ContextKeyUser).(*UserAuthClaims)
 	return userClaims
 }
 
-func (helper grpcRequestHelper) GetTenant(ctx context.Context) (string, error) {
+func (helper *contextHelper) GetTenant(ctx context.Context) (string, error) {
 	// Extract metadata from context
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -128,7 +162,7 @@ func (helper grpcRequestHelper) GetTenant(ctx context.Context) (string, error) {
 }
 
 func NewContextHelper(authenticator Authenticator) ContextHelper {
-	return &grpcRequestHelper{
+	return &contextHelper{
 		authenticator: authenticator,
 	}
 }
