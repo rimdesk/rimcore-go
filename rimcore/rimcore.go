@@ -98,9 +98,11 @@ func WithPaginationScope(pagination *commonv1.PageRequest) func(db *gorm.DB) *go
 //
 // Example Usage:
 //
-//	db.Scopes(WithTenantScope("tenant-123")).Find(&records)
-func WithTenantScope(tenantId string) func(*gorm.DB) *gorm.DB {
+//	db.Scopes(WithTenantScope(ctx)).Find(&records)
+func WithTenantScope(ctx context.Context) func(*gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
+		tenantId := ctx.Value(XTenantKey)
+		log.Printf("👮 [WithTenantScope]: TenantId: %s", tenantId)
 		return db.Where("tenant_id = ?", tenantId)
 	}
 }
