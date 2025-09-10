@@ -22,6 +22,20 @@ type grpcAuthMiddleware struct {
 	contextHelper ContextHelper
 }
 
+func (middleware *grpcAuthMiddleware) UnaryTenantInterceptor() connect.UnaryInterceptorFunc {
+	return func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			tenantID := req.Header().Get(XTenantKey)
+			if tenantID == "" {
+				return nil, ErrMissingTenantHeader
+			}
+
+			newCtx := context.WithValue(ctx, XTenantKey, tenantID)
+			return next(newCtx, req)
+		}
+	}
+}
+
 func (middleware *grpcAuthMiddleware) UnaryTokenInterceptor(routes ...string) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {

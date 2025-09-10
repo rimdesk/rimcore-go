@@ -92,6 +92,7 @@ type Middleware interface {
 	LoggingUnaryInterceptor() connect.UnaryInterceptorFunc
 	HealthChecker(string) *grpchealth.StaticChecker
 	UnaryTokenInterceptor(...string) connect.UnaryInterceptorFunc
+	UnaryTenantInterceptor() connect.UnaryInterceptorFunc
 }
 
 // Authentication with KeyCloak
