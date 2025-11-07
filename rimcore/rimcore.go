@@ -127,8 +127,8 @@ func (u UserAuthClaims) String() string {
 
 var ErrMissingTenantHeader = connect.NewError(connect.CodeInvalidArgument, errors.New("x-tenant-id is required in the header"))
 var ErrFailedParsingTokenClaims = connect.NewError(connect.CodeInvalidArgument, errors.New("token claims could not be parsed"))
-var ErrInvalidToken = connect.NewError(connect.CodeUnauthenticated, errors.New(fmt.Sprintf("invalid token")))
-var ErrMissingOrInvalidToken = connect.NewError(connect.CodeUnauthenticated, errors.New(fmt.Sprintf("missing or invalid token")))
+var ErrInvalidToken = connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
+var ErrMissingOrInvalidToken = connect.NewError(connect.CodeUnauthenticated, errors.New("missing or invalid token"))
 
 //Helpers
 
@@ -146,21 +146,26 @@ func (helper *contextHelper) GetUserClaims(ctx context.Context) *UserAuthClaims 
 }
 
 func (helper *contextHelper) GetTenant(ctx context.Context) (string, error) {
-	// Extract metadata from context
+	// First, try to get tenant ID from context (set by UnaryTenantInterceptor for Connect-RPC)
+	if tenantID := ctx.Value(XTenantKey); tenantID != nil {
+		if id, ok := tenantID.(string); ok && id != "" {
+			log.Printf("Retrieved tenant ID from context: %s", id)
+			return id, nil
+		}
+	}
+
+	// Fallback to gRPC metadata (for backward compatibility with gRPC)
 	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return "", errors.New("could not extract metadata")
+	if ok {
+		// Check if the X-Tenant-Id header is present in gRPC metadata
+		companyID := md[XTenantKey]
+		if len(companyID) > 0 && companyID[0] != "" {
+			log.Printf("Received X-Tenant-Id from gRPC metadata: %s", companyID[0])
+			return companyID[0], nil
+		}
 	}
 
-	// Check if the X-Company-Id header is present
-	companyID := md[XTenantKey]
-	if len(companyID) == 0 {
-		return "", errors.New("could not extract company id")
-	}
-
-	log.Printf("Received X-Company-Id: %s", companyID[0])
-
-	return companyID[0], nil
+	return "", errors.New("could not extract tenant id: x-tenant-id not found in context or metadata")
 }
 
 func NewContextHelper(authenticator Authenticator) ContextHelper {
@@ -168,7 +173,3 @@ func NewContextHelper(authenticator Authenticator) ContextHelper {
 		authenticator: authenticator,
 	}
 }
-
-// Middlewares
-
-// UnaryTokenInterceptor checks and parses JWT tokens and adds claims to context
