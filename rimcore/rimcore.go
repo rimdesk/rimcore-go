@@ -13,7 +13,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// PagedResult -------------For Pagination
+// PagedResult represents a paginated response containing a slice of items and the total count.
+// It is a generic type that can hold any type of items in the Items field.
+// The Total field represents the total number of items available across all pages.
+//
+// Type Parameters:
+//   - T: The type of items contained in the paginated result
+//
+// Fields:
+//   - Items: The slice of items for the current page
+//   - Total: The total number of items available across all pages
 
 func (p *PagedResult[T]) GetTotalPages(limit int32) int32 {
 	if p == nil || limit <= 0 {
@@ -22,6 +31,22 @@ func (p *PagedResult[T]) GetTotalPages(limit int32) int32 {
 	return int32((p.Total + int64(limit) - 1) / int64(limit))
 }
 
+// NewPagedResult creates a new PagedResult instance with the specified total count and items.
+// This is a factory function for creating paginated results in a consistent way.
+//
+// Type Parameters:
+//   - T: The type of items contained in the paginated result
+//
+// Parameters:
+//   - total: The total number of items available across all pages
+//   - items: The slice of items for the current page
+//
+// Returns:
+//   - A pointer to a new PagedResult instance containing the provided items and total count
+//
+// Example Usage:
+//
+//	result := NewPagedResult[User](100, []User{user1, user2})
 func NewPagedResult[T any](total int64, items T) *PagedResult[T] {
 	return &PagedResult[T]{
 		Items: items,
@@ -114,8 +139,19 @@ const (
 	XTenantKey = "x-tenant-id"
 )
 
-// UserAuthClaims represents the JWT claims structure
+// UserAuthClaims represents the JWT claims structure containing authenticated user information.
+// This structure holds the claims extracted from JWT tokens used for authentication and authorization.
 
+// String returns a JSON string representation of the UserAuthClaims.
+// This method is useful for logging and debugging purposes.
+//
+// Returns:
+//   - A JSON-formatted string representation of the user claims
+//
+// Example Usage:
+//
+//	claims := UserAuthClaims{...}
+//	log.Printf("User claims: %s", claims.String())
 func (u UserAuthClaims) String() string {
 	jb, _ := json.Marshal(u)
 	return string(jb)
@@ -132,19 +168,73 @@ var ErrMissingOrInvalidToken = connect.NewError(connect.CodeUnauthenticated, err
 
 //Helpers
 
+// contextHelper is a concrete implementation of the ContextHelper interface.
+// It provides utility methods for extracting authentication tokens, user claims,
+// and tenant information from context and request objects.
+//
+// Fields:
+//   - authenticator: An Authenticator instance used to extract and validate tokens
 type contextHelper struct {
 	authenticator Authenticator
 }
 
+// GetAccessToken extracts the access token from the request headers.
+// It delegates to the authenticator's ExtractHeaderToken method.
+//
+// Parameters:
+//   - request: A connect.AnyRequest containing the HTTP request with headers
+//
+// Returns:
+//   - The extracted access token string
+//   - An error if the token cannot be extracted or is invalid
+//
+// Example Usage:
+//
+//	token, err := helper.GetAccessToken(request)
+//	if err != nil {
+//	    return err
+//	}
 func (helper *contextHelper) GetAccessToken(request connect.AnyRequest) (string, error) {
 	return helper.authenticator.ExtractHeaderToken(request)
 }
 
+// GetUserClaims retrieves the authenticated user's claims from the context.
+// The claims should have been previously stored in the context by authentication middleware.
+//
+// Parameters:
+//   - ctx: A context.Context containing the user claims
+//
+// Returns:
+//   - A pointer to UserAuthClaims containing the authenticated user's information
+//
+// Note: This method will panic if the context does not contain user claims or if the value
+// cannot be type-asserted to *UserAuthClaims. Ensure authentication middleware runs before calling.
+//
+// Example Usage:
+//
+//	claims := helper.GetUserClaims(ctx)
+//	log.Printf("User ID: %s", claims.UserId)
 func (helper *contextHelper) GetUserClaims(ctx context.Context) *UserAuthClaims {
 	userClaims := ctx.Value(ContextKeyUser).(*UserAuthClaims)
 	return userClaims
 }
 
+// GetTenant extracts the tenant ID from the incoming gRPC metadata in the context.
+// It looks for the x-tenant-id header to identify which tenant the request belongs to.
+//
+// Parameters:
+//   - ctx: A context.Context containing incoming gRPC metadata
+//
+// Returns:
+//   - The tenant ID string extracted from the x-tenant-id header
+//   - An error if metadata cannot be extracted or the x-tenant-id header is missing
+//
+// Example Usage:
+//
+//	tenantId, err := helper.GetTenant(ctx)
+//	if err != nil {
+//	    return ErrMissingTenantHeader
+//	}
 func (helper *contextHelper) GetTenant(ctx context.Context) (string, error) {
 	// First, try to get tenant ID from context (set by UnaryTenantInterceptor for Connect-RPC)
 	if tenantID := ctx.Value(XTenantKey); tenantID != nil {
@@ -168,6 +258,20 @@ func (helper *contextHelper) GetTenant(ctx context.Context) (string, error) {
 	return "", errors.New("could not extract tenant id: x-tenant-id not found in context or metadata")
 }
 
+// NewContextHelper creates a new ContextHelper instance with the provided authenticator.
+// This is a factory function for creating context helpers that can extract authentication
+// and tenant information from requests and contexts.
+//
+// Parameters:
+//   - authenticator: An Authenticator implementation used for token extraction and validation
+//
+// Returns:
+//   - A ContextHelper implementation that can extract tokens, user claims, and tenant information
+//
+// Example Usage:
+//
+//	authenticator := NewJWTAuthenticator(config)
+//	contextHelper := NewContextHelper(authenticator)
 func NewContextHelper(authenticator Authenticator) ContextHelper {
 	return &contextHelper{
 		authenticator: authenticator,

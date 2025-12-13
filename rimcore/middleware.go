@@ -1,3 +1,5 @@
+// Package rimcore provides middleware components for gRPC services including
+// authentication, tenant management, logging, CORS handling, and health checking.
 package rimcore
 
 import (
@@ -12,16 +14,21 @@ import (
 	"connectrpc.com/connect"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/grpchealth"
+	"github.com/beego/beego/v2/core/logs"
 	"github.com/rs/cors"
-	"go.uber.org/zap"
 )
 
+// grpcAuthMiddleware implements the Middleware interface providing authentication,
+// authorization, logging, and CORS handling for gRPC services.
 type grpcAuthMiddleware struct {
-	loggR         *zap.Logger
+	loggR         *logs.BeeLogger
 	authenticator Authenticator
 	contextHelper ContextHelper
 }
 
+// UnaryTenantInterceptor returns a Connect interceptor that extracts and validates
+// the tenant ID from the X-Tenant-ID header and adds it to the request context.
+// Returns ErrMissingTenantHeader if the tenant ID header is missing.
 func (middleware *grpcAuthMiddleware) UnaryTenantInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -36,6 +43,11 @@ func (middleware *grpcAuthMiddleware) UnaryTenantInterceptor() connect.UnaryInte
 	}
 }
 
+// UnaryTokenInterceptor returns a Connect interceptor that validates authentication tokens
+// for all routes except those specified in the routes parameter. It extracts the token from
+// the request header, verifies it, parses the claims, and adds the user claims to the context.
+// Returns CodeUnauthenticated error if token is missing, invalid, or cannot be verified.
+// Returns CodeInternal error if token claims cannot be parsed.
 func (middleware *grpcAuthMiddleware) UnaryTokenInterceptor(routes ...string) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -65,7 +77,9 @@ func (middleware *grpcAuthMiddleware) UnaryTokenInterceptor(routes ...string) co
 	}
 }
 
-// LoggingUnaryInterceptor logs sanitized gRPC request and response data
+// LoggingUnaryInterceptor returns a Connect interceptor that logs sanitized gRPC request
+// and response data. It logs the method name, sanitized request, duration, and response
+// or error information. Sensitive fields are redacted from request logs.
 func (middleware *grpcAuthMiddleware) LoggingUnaryInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, request connect.AnyRequest) (connect.AnyResponse, error) {
@@ -74,25 +88,28 @@ func (middleware *grpcAuthMiddleware) LoggingUnaryInterceptor() connect.UnaryInt
 
 			sanitizedReq := middleware.sanitizeRequest(request)
 
-			middleware.loggR.Info("gRPC request received",
-				zap.String("method", fullMethod),
-				zap.Any("request", sanitizedReq),
+			middleware.loggR.Info(
+				"gRPC request received | method=%s | request=%v",
+				fullMethod,
+				sanitizedReq,
 			)
 
 			resp, err := next(ctx, request)
 			duration := time.Since(start)
 
 			if err != nil {
-				middleware.loggR.Error("gRPC request failed",
-					zap.String("method", fullMethod),
-					zap.Error(err),
-					zap.Duration("duration", duration),
+				middleware.loggR.Error(
+					"gRPC request failed | method=%s | duration=%s | error=%v",
+					fullMethod,
+					duration,
+					err,
 				)
 			} else {
-				middleware.loggR.Info("gRPC request completed",
-					zap.String("method", fullMethod),
-					zap.Any("response", resp),
-					zap.Duration("duration", duration),
+				middleware.loggR.Info(
+					"gRPC request completed | method=%s | duration=%s | response=%v",
+					fullMethod,
+					duration,
+					resp,
 				)
 			}
 
@@ -101,7 +118,9 @@ func (middleware *grpcAuthMiddleware) LoggingUnaryInterceptor() connect.UnaryInt
 	}
 }
 
-// CorsMiddleware sets CORS configuration for HTTP server
+// CorsMiddleware returns an HTTP handler that wraps the provided handler with CORS
+// configuration. It allows all origins, exposes standard Connect headers, and enables
+// appropriate methods for gRPC-Web and Connect protocols.
 func (middleware *grpcAuthMiddleware) CorsMiddleware(h http.Handler) http.Handler {
 	c := cors.New(cors.Options{
 		AllowedOrigins:       []string{"*"},
@@ -114,12 +133,16 @@ func (middleware *grpcAuthMiddleware) CorsMiddleware(h http.Handler) http.Handle
 	return c.Handler(h)
 }
 
-// HealthChecker returns a static gRPC health checker
+// HealthChecker returns a static gRPC health checker for the specified service name.
+// The checker can be used to report service health status according to the gRPC health
+// checking protocol.
 func (middleware *grpcAuthMiddleware) HealthChecker(srvName string) *grpchealth.StaticChecker {
 	return grpchealth.NewStaticChecker(srvName)
 }
 
-// sanitizeRequest masks sensitive fields in request struct
+// sanitizeRequest masks sensitive fields in the request struct before logging.
+// It identifies and redacts common sensitive field names such as password, token,
+// secret, apikey, and auth by replacing their values with "[REDACTED]" or zero values.
 func (middleware *grpcAuthMiddleware) sanitizeRequest(req interface{}) interface{} {
 	sensitiveFields := map[string]struct{}{
 		"password": {},
@@ -132,6 +155,9 @@ func (middleware *grpcAuthMiddleware) sanitizeRequest(req interface{}) interface
 	return sanitize(req, sensitiveFields)
 }
 
+// sanitize recursively traverses a struct and redacts fields that match sensitive field names.
+// String fields are replaced with "[REDACTED]" and other types are set to their zero values.
+// Nested structs are recursively sanitized. Returns a sanitized copy of the input value.
 func sanitize(v interface{}, sensitiveFields map[string]struct{}) interface{} {
 	if v == nil {
 		return nil
@@ -175,8 +201,10 @@ func sanitize(v interface{}, sensitiveFields map[string]struct{}) interface{} {
 	return copied.Addr().Interface()
 }
 
-// NewMiddleware  returns a new instance of grpcAuthMiddleware
-func NewMiddleware(authenticator Authenticator, logger *zap.Logger, contextHelper ContextHelper) Middleware {
+// NewMiddleware creates and returns a new Middleware instance with the provided
+// authenticator, logger, and context helper. The returned middleware can be used
+// to configure gRPC service interceptors for authentication, logging, and CORS handling.
+func NewMiddleware(authenticator Authenticator, logger *logs.BeeLogger, contextHelper ContextHelper) Middleware {
 	return &grpcAuthMiddleware{
 		loggR:         logger,
 		authenticator: authenticator,
