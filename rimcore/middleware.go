@@ -30,17 +30,25 @@ type grpcAuthMiddleware struct {
 func (middleware *grpcAuthMiddleware) UnaryAuthZInterceptor(authZ AuthZ) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			middleware.loggR.Debug("UnaryAuthZInterceptor: checking authorization for procedure=%s", req.Spec().Procedure)
 			claims := middleware.contextHelper.GetUserClaims(ctx)
-			resource, action, err := middleware.resolver.Resolve(req.Spec().Procedure)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
+			tenant, _ := middleware.contextHelper.GetTenant(ctx)
 
-			hasPermission, err := authZ.HasPermission(claims, resource, action)
+			middleware.loggR.Debug("UnaryAuthZInterceptor: user claims retrieved, userID=%s", claims.ID)
+			domain, resource, action, err := middleware.resolver.Resolve(req.Spec().Procedure)
 			if err != nil {
+				middleware.loggR.Debug("UnaryAuthZInterceptor: failed to resolve resource for procedure=%s, error=%v", req.Spec().Procedure, err)
 				return nil, connect.NewError(connect.CodeInternal, err)
 			}
-			
+			middleware.loggR.Debug("UnaryAuthZInterceptor: resolved resource=%s, action=%s for procedure=%s", resource, action, req.Spec().Procedure)
+
+			hasPermission, err := authZ.HasPermission(claims, tenant, domain, resource, action)
+			if err != nil {
+				middleware.loggR.Debug("UnaryAuthZInterceptor: permission check failed, error=%v", err)
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			middleware.loggR.Debug("UnaryAuthZInterceptor: permission check result, hasPermission=%v for userID=%s, resource=%s, action=%s", hasPermission, claims.ID, resource, action)
+
 			if !hasPermission {
 				return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("user does not have permission to perform action %s on resource %s", action, resource))
 			}
@@ -56,8 +64,11 @@ func (middleware *grpcAuthMiddleware) UnaryAuthZInterceptor(authZ AuthZ) connect
 func (middleware *grpcAuthMiddleware) UnaryTenantInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			middleware.loggR.Debug("UnaryTenantInterceptor: extracting tenant ID for procedure=%s", req.Spec().Procedure)
 			tenantID := req.Header().Get(XTenantKey)
+			middleware.loggR.Debug("UnaryTenantInterceptor: extracted tenantID=%s", tenantID)
 			if tenantID == "" {
+				middleware.loggR.Debug("UnaryTenantInterceptor: tenant ID is missing")
 				return nil, ErrMissingTenantHeader
 			}
 
@@ -76,24 +87,32 @@ func (middleware *grpcAuthMiddleware) UnaryTokenInterceptor(routes ...string) co
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 			fullMethod := req.Spec().Procedure
+			middleware.loggR.Debug("UnaryTokenInterceptor: checking authentication for procedure=%s", fullMethod)
 			if slices.Contains(routes, fullMethod) {
+				middleware.loggR.Debug("UnaryTokenInterceptor: procedure=%s is in skip list, bypassing authentication", fullMethod)
 				return next(ctx, req)
 			}
 
 			token, err := middleware.authenticator.ExtractHeaderToken(req)
 			if err != nil {
+				middleware.loggR.Debug("UnaryTokenInterceptor: failed to extract token, error=%v", err)
 				return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("missing or invalid token: %v", err))
 			}
+			middleware.loggR.Debug("UnaryTokenInterceptor: token extracted successfully")
 
 			idToken, err := middleware.authenticator.GetVerifier().Verify(ctx, token)
 			if err != nil {
+				middleware.loggR.Debug("UnaryTokenInterceptor: token verification failed, error=%v", err)
 				return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid token: %v", err))
 			}
+			middleware.loggR.Debug("UnaryTokenInterceptor: token verified successfully")
 
 			claims := new(UserAuthClaims)
 			if err := idToken.Claims(claims); err != nil {
+				middleware.loggR.Debug("UnaryTokenInterceptor: failed to parse claims, error=%v", err)
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to parse token claims: %v", err))
 			}
+			middleware.loggR.Debug("UnaryTokenInterceptor: claims parsed successfully, userID=%s", claims.ID)
 
 			newCtx := context.WithValue(ctx, ContextKeyUser, claims)
 			return next(newCtx, req)
@@ -142,10 +161,10 @@ func (middleware *grpcAuthMiddleware) UnaryLoggingInterceptor() connect.UnaryInt
 	}
 }
 
-// CorsMiddleware returns an HTTP handler that wraps the provided handler with CORS
+// Cors returns an HTTP handler that wraps the provided handler with CORS
 // configuration. It allows all origins, exposes standard Connect headers, and enables
 // appropriate methods for gRPC-Web and Connect protocols.
-func (middleware *grpcAuthMiddleware) CorsMiddleware(h http.Handler) http.Handler {
+func (middleware *grpcAuthMiddleware) Cors(h http.Handler) http.Handler {
 	c := cors.New(cors.Options{
 		AllowedOrigins:       []string{"*"},
 		AllowedMethods:       connectcors.AllowedMethods(),
@@ -168,6 +187,7 @@ func (middleware *grpcAuthMiddleware) HealthChecker(srvName string) *grpchealth.
 // It identifies and redacts common sensitive field names such as password, token,
 // secret, apikey, and auth by replacing their values with "[REDACTED]" or zero values.
 func (middleware *grpcAuthMiddleware) sanitizeRequest(req interface{}) interface{} {
+	middleware.loggR.Debug("sanitizeRequest: sanitizing request of type=%T", req)
 	sensitiveFields := map[string]struct{}{
 		"password": {},
 		"token":    {},

@@ -3,8 +3,10 @@
 package rimcore
 
 import (
-	commonv1 "buf.build/gen/go/rimdesk/common/protocolbuffers/go/rimdesk/common/v1"
 	"fmt"
+
+	commonv1 "buf.build/gen/go/rimdesk/common/protocolbuffers/go/rimdesk/common/v1"
+	"github.com/beego/beego/v2/core/logs"
 	"github.com/casbin/casbin/v2"
 	gormadapter "github.com/casbin/gorm-adapter/v3"
 	"gorm.io/gorm"
@@ -15,6 +17,7 @@ import (
 // defined policies and resources.
 type authZ struct {
 	enforcer *casbin.Enforcer
+	loggR    *logs.BeeLogger
 }
 
 // authZResolver implements the ResourceResolver interface and maps RPC procedures
@@ -22,6 +25,19 @@ type authZ struct {
 // what permissions are needed for a given procedure call.
 type authZResolver struct {
 	permissions map[string]*commonv1.Permission
+	loggR       *logs.BeeLogger
+}
+
+type Policy struct {
+	ID    uint   `gorm:"primaryKey"`
+	PType string `gorm:"size:10;index:idx_ptype"`
+
+	V0 string `gorm:"size:255;index:idx_rule"` // role
+	V1 string `gorm:"size:255;index:idx_rule"` // tenant
+	V2 string `gorm:"size:255;index:idx_rule"` // domain
+	V3 string `gorm:"size:255;index:idx_rule"` // resource
+	V4 string `gorm:"size:255;index:idx_rule"` // action
+	V5 string `gorm:"size:255"`
 }
 
 // Resolve maps an RPC procedure name to its required resource and action permissions.
@@ -35,13 +51,15 @@ type authZResolver struct {
 //   - resource: the name of the resource required for the procedure
 //   - action: the action required to be performed on the resource
 //   - error: an error if the procedure is not found in the permissions map, nil otherwise
-func (a authZResolver) Resolve(procedure string) (string, string, error) {
+func (a authZResolver) Resolve(procedure string) (domain, resource, action string, err error) {
 	p, ok := a.permissions[procedure]
+	a.loggR.Debug("Permission for procedure:", procedure, "=>", p)
+
 	if !ok {
-		return "", "", fmt.Errorf("permission not found for procedure: %s" + procedure)
+		return "", "", "", fmt.Errorf("permission not found for procedure: %s", procedure)
 	}
 
-	return p.Resource, p.Action, nil
+	return p.Domain, p.Resource, p.Action, nil
 }
 
 // HasPermission checks if a user has permission to perform a specific action on a resource.
@@ -54,13 +72,28 @@ func (a authZResolver) Resolve(procedure string) (string, string, error) {
 //
 // Returns:
 //   - true if the user is authorized, false otherwise
-func (auth *authZ) HasPermission(userClaims *UserAuthClaims, resource string, action string) (bool, error) {
-	allowed, err := auth.enforcer.Enforce(userClaims.ID, resource, action)
+func (auth *authZ) HasPermission(userClaims *UserAuthClaims, tenant string, domain string, resource string, action string) (bool, error) {
+	auth.loggR.Info(
+		"AuthZ check user=%s tenant=%s domain=%s resource=%s action=%s",
+		userClaims.ID, tenant, domain, resource, action,
+	)
+
+	allowed, err := auth.enforcer.Enforce(
+		userClaims.ID,
+		tenant,
+		domain,
+		resource,
+		action,
+	)
 	if err != nil {
-		return false, fmt.Errorf("failed to enforce policy: %v", err)
+		return false, fmt.Errorf("failed to enforce policy: %w", err)
 	}
+
 	if !allowed {
-		return false, fmt.Errorf("user does not have permission to perform action %s on resource %s", action, resource)
+		return false, fmt.Errorf(
+			"permission denied: %s:%s on %s (tenant=%s)",
+			resource, action, domain, tenant,
+		)
 	}
 
 	return true, nil
@@ -72,16 +105,11 @@ func (auth *authZ) HasPermission(userClaims *UserAuthClaims, resource string, ac
 // Returns:
 //   - error if loading the policy fails, nil otherwise
 func (auth *authZ) Load() error {
-	err := auth.enforcer.LoadModel()
-	if err != nil {
-		return err
-	}
-
-	if err := auth.enforcer.LoadPolicy(); err != nil {
-		return err
-	}
-	auth.enforcer.EnableAutoSave(true)
-	auth.enforcer.EnableLog(true)
+	//auth.enforcer.EnableLog(true)
+	//if err := auth.enforcer.LoadPolicy(); err != nil {
+	//	return err
+	//}
+	//auth.enforcer.EnableAutoSave(true)
 
 	return nil
 }
@@ -94,20 +122,23 @@ func (auth *authZ) Load() error {
 //
 // Returns:
 //   - AuthZ: a new authorization instance
-func NewAuthZ(model string, db *gorm.DB) (AuthZ, error) {
-	a, err := gormadapter.NewAdapterByDB(db)
-
+func NewAuthZ(model string, db *gorm.DB, logger *logs.BeeLogger) (AuthZ, error) {
+	logger.Info("👮🏽[AuthZ]: Setting up authorization policy enforcement...")
+	a, err := gormadapter.NewAdapterByDBWithCustomTable(db, &Policy{}, "policies")
 	if err != nil {
 		return nil, err
 	}
 
-	policyEnforcer, err := casbin.NewEnforcer(model, a)
+	logger.Info("👮🏽[AuthZ]: Loading authorization policies...")
+	enforcer, err := casbin.NewEnforcer(model, a)
 	if err != nil {
 		return nil, err
 	}
 
+	logger.Info("👮[AuthZ]: Authorization policies loaded successfully.")
 	return &authZ{
-		enforcer: policyEnforcer,
+		enforcer: enforcer,
+		loggR:    logger,
 	}, nil
 }
 
@@ -118,6 +149,6 @@ func NewAuthZ(model string, db *gorm.DB) (AuthZ, error) {
 //
 // Returns:
 //   - ResourceResolver: a new resolver instance for mapping procedures to resources and actions
-func NewAuthZResolver(permissions map[string]*commonv1.Permission) ResourceResolver {
-	return &authZResolver{}
+func NewAuthZResolver(permissions map[string]*commonv1.Permission, logger *logs.BeeLogger) ResourceResolver {
+	return &authZResolver{permissions: permissions, loggR: logger}
 }

@@ -156,7 +156,7 @@ type Authenticator interface {
 type ResourceResolver interface {
 	// Resolve takes a procedure name and returns the associated resource and action strings
 	// used for authorization checks. Returns (resource, action) tuple.
-	Resolve(procedure string) (string, string, error)
+	Resolve(procedure string) (string, string, string, error)
 }
 
 // Middleware defines the interface for HTTP and RPC middleware components.
@@ -164,7 +164,7 @@ type ResourceResolver interface {
 // token validation, and tenant context extraction for both HTTP and Connect RPC services.
 type Middleware interface {
 	// CorsMiddleware wraps an HTTP handler with CORS (Cross-Origin Resource Sharing) support
-	CorsMiddleware(http.Handler) http.Handler
+	Cors(http.Handler) http.Handler
 	// UnaryLoggingInterceptor returns a Connect RPC interceptor that logs unary requests and responses
 	UnaryLoggingInterceptor() connect.UnaryInterceptorFunc
 	// HealthChecker creates a static health checker for gRPC health checking protocol with the given service name
@@ -184,7 +184,7 @@ type Middleware interface {
 type AuthZ interface {
 	// HasPermission checks if the user identified by userClaims has permission to perform
 	// the specified action on the given resource. Returns true if allowed, false otherwise.
-	HasPermission(userClaims *UserAuthClaims, resource, action string) (bool, error)
+	HasPermission(userClaims *UserAuthClaims, tenant, domain, resource, action string) (bool, error)
 	// Load initializes the authorization enforcer by loading the policy model and rules.
 	// It enables auto-save and logging features for the enforcer.
 	Load() error
