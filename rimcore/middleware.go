@@ -21,9 +21,33 @@ import (
 // grpcAuthMiddleware implements the Middleware interface providing authentication,
 // authorization, logging, and CORS handling for gRPC services.
 type grpcAuthMiddleware struct {
+	contextHelper ContextHelper
 	loggR         *logs.BeeLogger
 	authenticator Authenticator
-	contextHelper ContextHelper
+	resolver      ResourceResolver
+}
+
+func (middleware *grpcAuthMiddleware) UnaryAuthZInterceptor(authZ AuthZ) connect.UnaryInterceptorFunc {
+	return func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			claims := middleware.contextHelper.GetUserClaims(ctx)
+			resource, action, err := middleware.resolver.Resolve(req.Spec().Procedure)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+
+			hasPermission, err := authZ.HasPermission(claims, resource, action)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			
+			if !hasPermission {
+				return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("user does not have permission to perform action %s on resource %s", action, resource))
+			}
+
+			return next(ctx, req)
+		}
+	}
 }
 
 // UnaryTenantInterceptor returns a Connect interceptor that extracts and validates
@@ -44,9 +68,9 @@ func (middleware *grpcAuthMiddleware) UnaryTenantInterceptor() connect.UnaryInte
 }
 
 // UnaryTokenInterceptor returns a Connect interceptor that validates authentication tokens
-// for all routes except those specified in the routes parameter. It extracts the token from
+// for all routes except those specified in the routes' parameter. It extracts the token from
 // the request header, verifies it, parses the claims, and adds the user claims to the context.
-// Returns CodeUnauthenticated error if token is missing, invalid, or cannot be verified.
+// Returns CodeUnauthenticated error if a token is missing, invalid, or cannot be verified.
 // Returns CodeInternal error if token claims cannot be parsed.
 func (middleware *grpcAuthMiddleware) UnaryTokenInterceptor(routes ...string) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
@@ -77,10 +101,10 @@ func (middleware *grpcAuthMiddleware) UnaryTokenInterceptor(routes ...string) co
 	}
 }
 
-// LoggingUnaryInterceptor returns a Connect interceptor that logs sanitized gRPC request
+// UnaryLoggingInterceptor returns a Connect interceptor that logs sanitized gRPC request
 // and response data. It logs the method name, sanitized request, duration, and response
 // or error information. Sensitive fields are redacted from request logs.
-func (middleware *grpcAuthMiddleware) LoggingUnaryInterceptor() connect.UnaryInterceptorFunc {
+func (middleware *grpcAuthMiddleware) UnaryLoggingInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, request connect.AnyRequest) (connect.AnyResponse, error) {
 			start := time.Now()
@@ -204,9 +228,10 @@ func sanitize(v interface{}, sensitiveFields map[string]struct{}) interface{} {
 // NewMiddleware creates and returns a new Middleware instance with the provided
 // authenticator, logger, and context helper. The returned middleware can be used
 // to configure gRPC service interceptors for authentication, logging, and CORS handling.
-func NewMiddleware(authenticator Authenticator, logger *logs.BeeLogger, contextHelper ContextHelper) Middleware {
+func NewMiddleware(authenticator Authenticator, logger *logs.BeeLogger, contextHelper ContextHelper, resolver ResourceResolver) Middleware {
 	return &grpcAuthMiddleware{
 		loggR:         logger,
+		resolver:      resolver,
 		authenticator: authenticator,
 		contextHelper: contextHelper,
 	}

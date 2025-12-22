@@ -1,4 +1,4 @@
-// Package rimcore provides core types, interfaces and utilities for the RIM (Resource Identity Management) system.
+// Package rimcore provides core types, interfaces, and utilities for the RIM (Resource Identity Management) system.
 // It defines authentication structures, configuration interfaces, middleware components, and common data types
 // used across the application for handling JWT claims, OIDC authentication, database operations, and HTTP/gRPC services.
 package rimcore
@@ -21,7 +21,7 @@ import (
 // PagedResult is a generic struct that represents a paginated result set.
 // It contains a collection of items of any type T and the total count of items available.
 type PagedResult[T any] struct {
-	// Items holds the actual data items for the current page
+	// Items hold the actual data items for the current page
 	Items T
 	// Total represents the total number of items across all pages
 	Total int64
@@ -33,7 +33,7 @@ type PagedResult[T any] struct {
 type UserAuthClaims struct {
 	// Exp is the expiration time (Unix timestamp) after which the token is invalid
 	Exp int64 `json:"exp"`
-	// Iat is the issued at time (Unix timestamp) when the token was created
+	// Iat is the issued at the time (Unix timestamp) when the token was created
 	Iat int64 `json:"iat"`
 	// Jti is the JWT ID, a unique identifier for this token
 	Jti string `json:"jti"`
@@ -41,7 +41,7 @@ type UserAuthClaims struct {
 	Iss string `json:"iss"`
 	// Aud is the audience, the intended recipients of this token
 	Aud []string `json:"aud"`
-	// Id is the subject identifier, typically the user's unique ID
+	// ID is the subject identifier, typically the user's unique ID
 	Id string `json:"sub"`
 	// Typ is the token type, usually "Bearer"
 	Typ string `json:"typ"`
@@ -80,7 +80,7 @@ type UserAuthClaims struct {
 // RealmAccess defines roles at the realm level.
 // These roles are granted globally across the entire Keycloak realm.
 type RealmAccess struct {
-	// Roles contains the list of role names assigned to the user at the realm level
+	// Roles contain the list of role names assigned to the user at the realm level
 	Roles []string `json:"roles"`
 }
 
@@ -94,7 +94,7 @@ type ResourceAccess struct {
 // AccountRoles defines roles within the "account" resource.
 // These roles control access to account management features.
 type AccountRoles struct {
-	// Roles contains the list of role names assigned for account management
+	// Roles contain the list of role names assigned for account management
 	Roles []string `json:"roles"`
 }
 
@@ -150,18 +150,42 @@ type Authenticator interface {
 	ValidateTokenMiddleware(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error)
 }
 
+// ResourceResolver defines the interface for resolving procedure names to authorization resources and actions.
+// It maps Connect RPC procedure names to their corresponding resource and action identifiers
+// used in the authorization policy enforcement.
+type ResourceResolver interface {
+	// Resolve takes a procedure name and returns the associated resource and action strings
+	// used for authorization checks. Returns (resource, action) tuple.
+	Resolve(procedure string) (string, string, error)
+}
+
 // Middleware defines the interface for HTTP and RPC middleware components.
 // It provides methods for CORS handling, request logging, health checking,
 // token validation, and tenant context extraction for both HTTP and Connect RPC services.
 type Middleware interface {
 	// CorsMiddleware wraps an HTTP handler with CORS (Cross-Origin Resource Sharing) support
 	CorsMiddleware(http.Handler) http.Handler
-	// LoggingUnaryInterceptor returns a Connect RPC interceptor that logs unary requests and responses
-	LoggingUnaryInterceptor() connect.UnaryInterceptorFunc
+	// UnaryLoggingInterceptor returns a Connect RPC interceptor that logs unary requests and responses
+	UnaryLoggingInterceptor() connect.UnaryInterceptorFunc
 	// HealthChecker creates a static health checker for gRPC health checking protocol with the given service name
 	HealthChecker(string) *grpchealth.StaticChecker
 	// UnaryTokenInterceptor returns a Connect RPC interceptor that validates tokens, optionally excluding specified procedures
 	UnaryTokenInterceptor(...string) connect.UnaryInterceptorFunc
 	// UnaryTenantInterceptor returns a Connect RPC interceptor that extracts and validates tenant context
 	UnaryTenantInterceptor() connect.UnaryInterceptorFunc
+	// UnaryAuthZInterceptor returns a Connect RPC interceptor that enforces authorization policies
+	// using the provided AuthZ enforcer to validate user permissions for requested resources and actions
+	UnaryAuthZInterceptor(enforcer AuthZ) connect.UnaryInterceptorFunc
+}
+
+// AuthZ defines the interface for authorization policy enforcement.
+// It provides methods to check user permissions against resources and actions
+// and to load authorization policies from a data source using the Casbin framework.
+type AuthZ interface {
+	// HasPermission checks if the user identified by userClaims has permission to perform
+	// the specified action on the given resource. Returns true if allowed, false otherwise.
+	HasPermission(userClaims *UserAuthClaims, resource, action string) (bool, error)
+	// Load initializes the authorization enforcer by loading the policy model and rules.
+	// It enables auto-save and logging features for the enforcer.
+	Load() error
 }
