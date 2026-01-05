@@ -3,7 +3,9 @@
 package rimcore
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	commonv1 "buf.build/gen/go/rimdesk/common/protocolbuffers/go/rimdesk/common/v1"
 	"github.com/beego/beego/v2/core/logs"
@@ -114,23 +116,30 @@ func (auth *authZ) Load() error {
 	return nil
 }
 
-// NewAuthZ creates a new authorization instance with the specified model and policy adapter.
+// NewAuthZ creates a new authorization instance with the specified database and logger.
+// It initializes a GORM adapter for Casbin policies and loads the authorization model
+// from the model.conf file.
 //
 // Parameters:
-//   - model: path to the Casbin model configuration file
-//   - adapter: the policy storage adapter for loading and saving policies
+//   - db: the GORM database connection for storing and retrieving policies
+//   - logger: the logger instance for logging authorization-related messages
 //
 // Returns:
 //   - AuthZ: a new authorization instance
-func NewAuthZ(model string, db *gorm.DB, logger *logs.BeeLogger) (AuthZ, error) {
+//   - error: an error if the adapter creation, model loading, or enforcer initialization fails, nil otherwise
+func NewAuthZ(db *gorm.DB, logger *logs.BeeLogger) (AuthZ, error) {
 	logger.Info("👮🏽[AuthZ]: Setting up authorization policy enforcement...")
 	a, err := gormadapter.NewAdapterByDBWithCustomTable(db, &Policy{}, "policies")
 	if err != nil {
 		return nil, err
 	}
 
+	if _, err := os.Stat("model.conf"); errors.Is(err, os.ErrNotExist) {
+		panic("model.conf not found")
+	}
+
 	logger.Info("👮🏽[AuthZ]: Loading authorization policies...")
-	enforcer, err := casbin.NewEnforcer(model, a)
+	enforcer, err := casbin.NewEnforcer("model.conf", a)
 	if err != nil {
 		return nil, err
 	}
