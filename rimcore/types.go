@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
+	"connectrpc.com/otelconnect"
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/coreos/go-oidc"
 	"github.com/golang-jwt/jwt/v4"
@@ -77,6 +78,28 @@ type UserAuthClaims struct {
 	jwt.RegisteredClaims
 }
 
+func (u UserAuthClaims) GetRole() string {
+	// Filter out all keycloak default and service roles
+	roles := make([]string, 0)
+	for _, role := range u.RealmAccess.Roles {
+		// Skip Keycloak default roles
+		if role == "default-roles-master" || role == "offline_access" || role == "uma_authorization" {
+			continue
+		}
+		// Skip service account roles
+		if len(role) > 8 && role[:8] == "service-" {
+			continue
+		}
+		roles = append(roles, role)
+	}
+
+	if len(roles) > 0 {
+		return roles[0]
+	}
+	return ""
+
+}
+
 // RealmAccess defines roles at the realm level.
 // These roles are granted globally across the entire Keycloak realm.
 type RealmAccess struct {
@@ -134,6 +157,10 @@ type ContextHelper interface {
 	GetUserClaims(context.Context) *UserAuthClaims
 	// GetAccessToken extracts the access token from the Connect RPC request
 	GetAccessToken(request connect.AnyRequest) (string, error)
+	// GetTraceID extracts the trace ID from the given context for distributed tracing and request correlation
+	GetTraceID(ctx context.Context) string
+	// GetRequestID extracts the request ID from the given context for tracking and correlating individual requests
+	GetRequestID(ctx context.Context) string
 }
 
 // Authenticator defines the interface for authentication and token validation.
@@ -163,7 +190,7 @@ type ResourceResolver interface {
 // It provides methods for CORS handling, request logging, health checking,
 // token validation, and tenant context extraction for both HTTP and Connect RPC services.
 type Middleware interface {
-	// CorsMiddleware wraps an HTTP handler with CORS (Cross-Origin Resource Sharing) support
+	// Cors CorsMiddleware wraps an HTTP handler with CORS (Cross-Origin Resource Sharing) support
 	Cors(http.Handler) http.Handler
 	// UnaryLoggingInterceptor returns a Connect RPC interceptor that logs unary requests and responses
 	UnaryLoggingInterceptor() connect.UnaryInterceptorFunc
@@ -176,6 +203,12 @@ type Middleware interface {
 	// UnaryAuthZInterceptor returns a Connect RPC interceptor that enforces authorization policies
 	// using the provided AuthZ enforcer to validate user permissions for requested resources and actions
 	UnaryAuthZInterceptor(enforcer AuthZ) connect.UnaryInterceptorFunc
+	// UnaryTracingInterceptor returns a Connect RPC interceptor that provides OpenTelemetry tracing instrumentation
+	// for distributed tracing and observability of RPC calls across services.
+	UnaryTracingInterceptor() *otelconnect.Interceptor
+	// UnaryRequestIDInterceptor returns a Connect RPC interceptor that generates and injects a unique request ID
+	// into the context for tracking and correlating requests across distributed services.
+	UnaryRequestIDInterceptor() connect.UnaryInterceptorFunc
 }
 
 // AuthZ defines the interface for authorization policy enforcement.

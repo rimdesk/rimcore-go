@@ -9,6 +9,7 @@ import (
 
 	commonv1 "buf.build/gen/go/rimdesk/common/protocolbuffers/go/rimdesk/common/v1"
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 	"gorm.io/gorm"
 )
@@ -176,6 +177,52 @@ var ErrMissingOrInvalidToken = connect.NewError(connect.CodeUnauthenticated, err
 //   - authenticator: An Authenticator instance used to extract and validate tokens
 type contextHelper struct {
 	authenticator Authenticator
+}
+
+// GetRequestID extracts the request ID from the context.
+// It retrieves the value associated with the "x-request-id" key from the context.
+// This is useful for request tracking and correlating logs across distributed systems.
+//
+// Parameters:
+//   - ctx: A context.Context containing the request ID value
+//
+// Returns:
+//   - The request ID as a string, or an empty string if no request ID is present in the context
+//
+// Example Usage:
+//
+//	requestID := helper.GetRequestID(ctx)
+//	log.Printf("Request ID: %s", requestID)
+func (helper *contextHelper) GetRequestID(ctx context.Context) string {
+	requestID := ctx.Value("x-request-id")
+	if requestID == nil {
+		return ""
+	}
+
+	return requestID.(string)
+}
+
+// GetTraceID extracts the OpenTelemetry trace ID from the context.
+// It retrieves the current span from the context and returns its trace ID as a string.
+// This is useful for correlating logs and debugging distributed traces.
+//
+// Parameters:
+//   - ctx: A context.Context containing OpenTelemetry span information
+//
+// Returns:
+//   - The trace ID as a string, or an empty string if no span is present in the context
+//
+// Example Usage:
+//
+//	traceID := helper.GetTraceID(ctx)
+//	log.Printf("Request trace ID: %s", traceID)
+func (helper *contextHelper) GetTraceID(ctx context.Context) string {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().TraceID().IsValid() {
+		return ""
+	}
+
+	return span.SpanContext().TraceID().String()
 }
 
 // GetAccessToken extracts the access token from the request headers.
