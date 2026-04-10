@@ -291,6 +291,14 @@ func (helper *contextHelper) GetTenant(ctx context.Context) (string, error) {
 		}
 	}
 
+	organizations, err := helper.GetOrganizations(ctx)
+	if err == nil && len(organizations) == 1 {
+		return organizations[0], nil
+	}
+	if err == nil && len(organizations) > 1 {
+		return "", errors.New("multiple organizations found in token; x-tenant-id header is required")
+	}
+
 	// Fallback to gRPC metadata (for backward compatibility with gRPC)
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
@@ -303,6 +311,18 @@ func (helper *contextHelper) GetTenant(ctx context.Context) (string, error) {
 	}
 
 	return "", errors.New("could not extract tenant id: x-tenant-id not found in context or metadata")
+}
+
+func (helper *contextHelper) GetOrganizations(ctx context.Context) ([]string, error) {
+	claims := helper.GetUserClaims(ctx)
+	if claims == nil {
+		return nil, errors.New("user claims not found in context")
+	}
+	organizations := claims.Organization.Aliases()
+	if len(organizations) == 0 {
+		return nil, errors.New("no organizations found in token claims")
+	}
+	return organizations, nil
 }
 
 // NewContextHelper creates a new ContextHelper instance with the provided authenticator.

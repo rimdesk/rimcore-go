@@ -5,7 +5,9 @@ package rimcore
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"sort"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
@@ -62,8 +64,9 @@ type UserAuthClaims struct {
 	Scope string `json:"scope"`
 	// EmailVerified indicates whether the user's email has been verified
 	EmailVerified bool `json:"email_verified"`
-	// Organization contains the list of organizations the user belongs to
-	Organization []string `json:"organization"`
+	// Organization contains the organizations the user belongs to.
+	// Keycloak can emit this claim as either an array or an object keyed by alias.
+	Organization OrganizationsClaim `json:"organization"`
 	// Name is the user's full name
 	Name string `json:"name"`
 	// PreferredUsername is the user's preferred username for display
@@ -76,6 +79,78 @@ type UserAuthClaims struct {
 	Email string `json:"email"`
 	// RegisteredClaims embeds standard JWT claims
 	jwt.RegisteredClaims
+}
+
+type OrganizationClaim struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Alias string `json:"alias"`
+}
+
+type OrganizationsClaim struct {
+	Items []OrganizationClaim
+}
+
+func (claim *OrganizationsClaim) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || len(data) == 0 {
+		claim.Items = nil
+		return nil
+	}
+
+	var aliases []string
+	if err := json.Unmarshal(data, &aliases); err == nil {
+		items := make([]OrganizationClaim, 0, len(aliases))
+		for _, alias := range aliases {
+			items = append(items, OrganizationClaim{Alias: alias})
+		}
+		claim.Items = items
+		return nil
+	}
+
+	type rawOrganization struct {
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Alias string `json:"alias"`
+	}
+	rawMap := map[string]rawOrganization{}
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return err
+	}
+
+	keys := make([]string, 0, len(rawMap))
+	for key := range rawMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	items := make([]OrganizationClaim, 0, len(keys))
+	for _, key := range keys {
+		item := rawMap[key]
+		if item.Alias == "" {
+			item.Alias = key
+		}
+		items = append(items, OrganizationClaim{
+			ID:    item.ID,
+			Name:  item.Name,
+			Alias: item.Alias,
+		})
+	}
+	claim.Items = items
+	return nil
+}
+
+func (claim OrganizationsClaim) Aliases() []string {
+	aliases := make([]string, 0, len(claim.Items))
+	for _, item := range claim.Items {
+		if item.Alias != "" {
+			aliases = append(aliases, item.Alias)
+			continue
+		}
+		if item.ID != "" {
+			aliases = append(aliases, item.ID)
+		}
+	}
+	return aliases
 }
 
 func (u UserAuthClaims) GetRole() string {
@@ -153,6 +228,8 @@ type Config interface {
 type ContextHelper interface {
 	// GetTenant extracts the tenant identifier from the given context
 	GetTenant(context.Context) (string, error)
+	// GetOrganizations extracts all organization aliases from the authenticated user's token claims
+	GetOrganizations(context.Context) ([]string, error)
 	// GetUserClaims extracts and returns the authenticated user's JWT claims from the context
 	GetUserClaims(context.Context) *UserAuthClaims
 	// GetAccessToken extracts the access token from the Connect RPC request
